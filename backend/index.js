@@ -19,6 +19,9 @@ connection.once('open', () => {
 const authRouter = require('./src/routes/auth');
 app.use('/api/auth', authRouter);
 
+const projectRouter = require('./src/routes/project.routes');
+app.use('/api/projects', projectRouter);
+
 app.get('/', (req, res) => {
     res.send('Hello from the backend!');
 });
