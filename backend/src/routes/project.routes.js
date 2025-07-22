@@ -18,4 +18,9 @@ router.post('/', auth, projectController.createProject);
 // @access  Private
 router.post('/:id/invite', auth, projectController.inviteUser);
 
+// Accept invitation (no auth, by token)
+router.get('/accept-invite', projectController.acceptInvite);
+// Reject invitation (no auth, by token)
+router.get('/reject-invite', projectController.rejectInvite);
+
 module.exports = router; 
