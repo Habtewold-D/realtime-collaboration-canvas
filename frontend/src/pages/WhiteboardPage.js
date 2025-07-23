@@ -1,9 +1,10 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Stage, Layer, Line, Circle } from 'react-konva';
+import { Stage, Layer, Line, Circle, Text } from 'react-konva';
 import { io } from 'socket.io-client';
 import projectService from '../services/project.service';
 import { API_URL } from '../services/api';
+import authService from '../services/auth.service';
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 600;
@@ -13,18 +14,29 @@ const TOOL_PEN = 'pen';
 const TOOL_ERASER = 'eraser';
 const TOOL_BRUSH = 'brush';
 
+function getInitials(email) {
+  if (!email) return '';
+  const [name] = email.split('@');
+  return name.length > 2 ? name.slice(0, 2).toUpperCase() : name.toUpperCase();
+}
+
 const WhiteboardPage = () => {
   const { id: projectId } = useParams();
-  const [lines, setLines] = useState([]); // {points, color, width, tool}
+  const [lines, setLines] = useState([]); // {points, color, width, tool, userEmail}
   const [isDrawing, setIsDrawing] = useState(false);
   const [penColor, setPenColor] = useState('#222222');
   const [brushSize, setBrushSize] = useState(3);
   const [tool, setTool] = useState(TOOL_PEN);
-  const [remoteCursors, setRemoteCursors] = useState({}); // { [clientId]: { x, y, color } }
+  const [remoteCursors, setRemoteCursors] = useState({}); // { [clientId]: { x, y, color, email } }
+  const [userList, setUserList] = useState([]); // [{ clientId, email }]
+  const [undoStack, setUndoStack] = useState([]);
+  const [redoStack, setRedoStack] = useState([]);
   const stageRef = useRef(null);
   const socketRef = useRef(null);
   const clientId = useRef(Math.random().toString(36).substr(2, 9));
   const myCursorColor = useRef('#' + Math.floor(Math.random()*16777215).toString(16));
+  const user = authService.getCurrentUser();
+  const userEmail = user?.email || 'anon';
 
   // Load lines from backend on mount
   useEffect(() => {
@@ -49,7 +61,7 @@ const WhiteboardPage = () => {
     const data = JSON.stringify({ lines: newLines });
     projectService.saveCanvasData(projectId, data)
       .then(res => {
-        console.log('[DEBUG] Backend save response:', res.data);
+        //
       })
       .catch(err => {
         console.error('[DEBUG] Error saving canvas data:', err);
@@ -61,17 +73,22 @@ const WhiteboardPage = () => {
     const socket = io(SOCKET_URL);
     socketRef.current = socket;
     socket.emit('join-room', projectId);
+    socket.emit('user-join', { projectId, clientId: clientId.current, email: userEmail });
 
     // Receive remote drawing
     socket.on('drawing', (data) => {
       if (data && data.line) {
         setLines(prev => [...prev, data.line]);
+        setUndoStack(prev => [...prev, lines]); // For undo/redo sync
+        setRedoStack([]);
       }
     });
 
     // Receive remote clear
     socket.on('clear', () => {
       setLines([]);
+      setUndoStack([]);
+      setRedoStack([]);
     });
 
     // Receive remote cursor
@@ -86,23 +103,44 @@ const WhiteboardPage = () => {
         delete copy[sender];
         return copy;
       });
+      setUserList(prev => prev.filter(u => u.clientId !== sender));
     });
+
+    // User list management
+    socket.on('user-list', (users) => {
+      setUserList(users);
+    });
+    socket.on('user-join', (user) => {
+      setUserList(prev => {
+        if (prev.some(u => u.clientId === user.clientId)) return prev;
+        return [...prev, user];
+      });
+    });
+    socket.on('user-leave', (user) => {
+      setUserList(prev => prev.filter(u => u.clientId !== user.clientId));
+    });
+
+    // Announce myself
+    socket.emit('user-join', { projectId, clientId: clientId.current, email: userEmail });
 
     return () => {
       socket.disconnect();
     };
-  }, [projectId]);
+  }, [projectId, userEmail]);
 
   // Drawing handlers
   const handleMouseDown = (e) => {
     setIsDrawing(true);
+    setUndoStack(prev => [...prev, lines]);
+    setRedoStack([]);
     const pos = e.target.getStage().getPointerPosition();
     const newLine = {
       points: [pos.x, pos.y],
       color: tool === TOOL_ERASER ? '#fff' : (tool === TOOL_BRUSH ? penColor : penColor),
       width: tool === TOOL_BRUSH ? brushSize * 2 : brushSize,
       tool,
-      clientId: clientId.current
+      clientId: clientId.current,
+      email: userEmail
     };
     setLines([...lines, newLine]);
     // Emit start of new line
@@ -133,7 +171,7 @@ const WhiteboardPage = () => {
     if (socketRef.current) {
       socketRef.current.emit('cursor', {
         projectId,
-        cursor: { x: point.x, y: point.y, color: myCursorColor.current }
+        cursor: { x: point.x, y: point.y, color: myCursorColor.current, email: userEmail }
       });
     }
   };
@@ -144,10 +182,38 @@ const WhiteboardPage = () => {
   };
 
   const handleClear = () => {
+    setUndoStack(prev => [...prev, lines]);
+    setRedoStack([]);
     setLines([]);
     saveLines([]);
     if (socketRef.current) {
       socketRef.current.emit('clear', { projectId });
+    }
+  };
+
+  // Undo/Redo handlers
+  const handleUndo = () => {
+    if (undoStack.length === 0) return;
+    setRedoStack(prev => [lines, ...prev]);
+    const prevLines = undoStack[undoStack.length - 1];
+    setUndoStack(undoStack.slice(0, -1));
+    setLines(prevLines);
+    saveLines(prevLines);
+    if (socketRef.current) {
+      // Optionally broadcast undo
+      // socketRef.current.emit('undo', { projectId, lines: prevLines });
+    }
+  };
+  const handleRedo = () => {
+    if (redoStack.length === 0) return;
+    setUndoStack(prev => [...prev, lines]);
+    const nextLines = redoStack[0];
+    setRedoStack(redoStack.slice(1));
+    setLines(nextLines);
+    saveLines(nextLines);
+    if (socketRef.current) {
+      // Optionally broadcast redo
+      // socketRef.current.emit('redo', { projectId, lines: nextLines });
     }
   };
 
@@ -156,18 +222,28 @@ const WhiteboardPage = () => {
     setTool(newTool);
   };
 
-  // Render remote cursors
+  // Render remote cursors with email labels only
   const renderRemoteCursors = () => {
     return Object.entries(remoteCursors).map(([id, cursor]) => (
-      <Circle
-        key={id}
-        x={cursor.x}
-        y={cursor.y}
-        radius={8}
-        fill={cursor.color || '#00f'}
-        opacity={0.5}
-        listening={false}
-      />
+      <React.Fragment key={id}>
+        <Circle
+          x={cursor.x}
+          y={cursor.y}
+          radius={8}
+          fill={cursor.color || '#00f'}
+          opacity={0.5}
+          listening={false}
+        />
+        <Text
+          x={cursor.x + 10}
+          y={cursor.y - 10}
+          text={cursor.email || ''}
+          fontSize={14}
+          fill={cursor.color || '#00f'}
+          fontStyle="bold"
+          listening={false}
+        />
+      </React.Fragment>
     ));
   };
 

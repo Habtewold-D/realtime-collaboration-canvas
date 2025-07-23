@@ -65,7 +65,7 @@ exports.login = async (req, res) => {
             { expiresIn: 3600 },
             (err, token) => {
                 if (err) throw err;
-                res.json({ token });
+                res.json({ token, email: user.email }); // <-- Add email here
             }
         );
     } catch (err) {
