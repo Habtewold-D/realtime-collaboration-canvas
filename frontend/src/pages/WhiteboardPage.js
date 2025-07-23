@@ -1,18 +1,30 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { Stage, Layer, Line } from 'react-konva';
+import { Stage, Layer, Line, Circle } from 'react-konva';
+import { io } from 'socket.io-client';
 import projectService from '../services/project.service';
+import { API_URL } from '../services/api';
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 600;
+const SOCKET_URL = API_URL.replace(/\/api\/?$/, '');
+
+const TOOL_PEN = 'pen';
+const TOOL_ERASER = 'eraser';
+const TOOL_BRUSH = 'brush';
 
 const WhiteboardPage = () => {
   const { id: projectId } = useParams();
-  const [lines, setLines] = useState([]); // {points, color, width}
+  const [lines, setLines] = useState([]); // {points, color, width, tool}
   const [isDrawing, setIsDrawing] = useState(false);
   const [penColor, setPenColor] = useState('#222222');
   const [brushSize, setBrushSize] = useState(3);
+  const [tool, setTool] = useState(TOOL_PEN);
+  const [remoteCursors, setRemoteCursors] = useState({}); // { [clientId]: { x, y, color } }
   const stageRef = useRef(null);
+  const socketRef = useRef(null);
+  const clientId = useRef(Math.random().toString(36).substr(2, 9));
+  const myCursorColor = useRef('#' + Math.floor(Math.random()*16777215).toString(16));
 
   // Load lines from backend on mount
   useEffect(() => {
@@ -44,11 +56,59 @@ const WhiteboardPage = () => {
       });
   };
 
+  // Socket.io setup for real-time collaboration
+  useEffect(() => {
+    const socket = io(SOCKET_URL);
+    socketRef.current = socket;
+    socket.emit('join-room', projectId);
+
+    // Receive remote drawing
+    socket.on('drawing', (data) => {
+      if (data && data.line) {
+        setLines(prev => [...prev, data.line]);
+      }
+    });
+
+    // Receive remote clear
+    socket.on('clear', () => {
+      setLines([]);
+    });
+
+    // Receive remote cursor
+    socket.on('cursor', ({ sender, cursor }) => {
+      setRemoteCursors(prev => ({ ...prev, [sender]: cursor }));
+    });
+
+    // Remove cursor on disconnect
+    socket.on('user-disconnected', (sender) => {
+      setRemoteCursors(prev => {
+        const copy = { ...prev };
+        delete copy[sender];
+        return copy;
+      });
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [projectId]);
+
   // Drawing handlers
   const handleMouseDown = (e) => {
     setIsDrawing(true);
     const pos = e.target.getStage().getPointerPosition();
-    setLines([...lines, { points: [pos.x, pos.y], color: penColor, width: brushSize }]);
+    const newLine = {
+      points: [pos.x, pos.y],
+      color: tool === TOOL_ERASER ? '#fff' : (tool === TOOL_BRUSH ? penColor : penColor),
+      width: tool === TOOL_BRUSH ? brushSize * 2 : brushSize,
+      tool,
+      clientId: clientId.current
+    };
+    setLines([...lines, newLine]);
+    // Emit start of new line
+    if (socketRef.current) {
+      socketRef.current.emit('drawing', { projectId, data: { line: newLine } });
+    }
   };
 
   const handleMouseMove = (e) => {
@@ -57,12 +117,25 @@ const WhiteboardPage = () => {
     const point = stage.getPointerPosition();
     setLines(prevLines => {
       const lastLine = prevLines[prevLines.length - 1];
-      const newLines = prevLines.slice(0, -1).concat({
+      if (!lastLine) return prevLines;
+      const updatedLine = {
         ...lastLine,
         points: lastLine.points.concat([point.x, point.y])
-      });
+      };
+      const newLines = prevLines.slice(0, -1).concat(updatedLine);
+      // Emit updated line
+      if (socketRef.current) {
+        socketRef.current.emit('drawing', { projectId, data: { line: updatedLine } });
+      }
       return newLines;
     });
+    // Emit cursor position
+    if (socketRef.current) {
+      socketRef.current.emit('cursor', {
+        projectId,
+        cursor: { x: point.x, y: point.y, color: myCursorColor.current }
+      });
+    }
   };
 
   const handleMouseUp = () => {
@@ -73,12 +146,38 @@ const WhiteboardPage = () => {
   const handleClear = () => {
     setLines([]);
     saveLines([]);
+    if (socketRef.current) {
+      socketRef.current.emit('clear', { projectId });
+    }
+  };
+
+  // Tool selector
+  const handleToolChange = (newTool) => {
+    setTool(newTool);
+  };
+
+  // Render remote cursors
+  const renderRemoteCursors = () => {
+    return Object.entries(remoteCursors).map(([id, cursor]) => (
+      <Circle
+        key={id}
+        x={cursor.x}
+        y={cursor.y}
+        radius={8}
+        fill={cursor.color || '#00f'}
+        opacity={0.5}
+        listening={false}
+      />
+    ));
   };
 
   return (
     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: '100vh', background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
       <div style={{ margin: '2rem 0 1rem 0', display: 'flex', gap: '1rem', alignItems: 'center' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 500 }}>
+        <button onClick={() => handleToolChange(TOOL_PEN)} style={{ padding: '0.5rem 1.2rem', borderRadius: 8, border: 'none', background: tool === TOOL_PEN ? '#667eea' : '#eee', color: tool === TOOL_PEN ? '#fff' : '#222', fontWeight: 600, cursor: 'pointer' }}>Pen</button>
+        <button onClick={() => handleToolChange(TOOL_ERASER)} style={{ padding: '0.5rem 1.2rem', borderRadius: 8, border: 'none', background: tool === TOOL_ERASER ? '#e74c3c' : '#eee', color: tool === TOOL_ERASER ? '#fff' : '#222', fontWeight: 600, cursor: 'pointer' }}>Eraser</button>
+        <button onClick={() => handleToolChange(TOOL_BRUSH)} style={{ padding: '0.5rem 1.2rem', borderRadius: 8, border: 'none', background: tool === TOOL_BRUSH ? '#764ba2' : '#eee', color: tool === TOOL_BRUSH ? '#fff' : '#222', fontWeight: 600, cursor: 'pointer' }}>Brush</button>
+        <label style={{ display: tool !== TOOL_ERASER ? 'flex' : 'none', alignItems: 'center', gap: '0.5rem', fontWeight: 500 }}>
           Color
           <input type="color" value={penColor} onChange={e => setPenColor(e.target.value)} style={{ width: 32, height: 32, border: 'none', background: 'none', cursor: 'pointer' }} />
         </label>
@@ -112,14 +211,15 @@ const WhiteboardPage = () => {
               <Line
                 key={i}
                 points={line.points}
-                stroke={line.color}
+                stroke={line.tool === TOOL_ERASER ? '#fff' : line.color}
                 strokeWidth={line.width}
                 tension={0.5}
                 lineCap="round"
-                globalCompositeOperation="source-over"
+                globalCompositeOperation={line.tool === TOOL_ERASER ? 'destination-out' : 'source-over'}
                 lineJoin="round"
               />
             ))}
+            {renderRemoteCursors()}
           </Layer>
         </Stage>
       </div>
