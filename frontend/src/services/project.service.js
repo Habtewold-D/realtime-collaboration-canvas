@@ -16,10 +16,20 @@ const inviteUser = (projectId, email) => {
   return axios.post(PROJECT_API_URL + `${projectId}/invite`, { email }, { headers: authHeader() });
 };
 
+const saveCanvasData = (projectId, canvasData) => {
+  return axios.patch(PROJECT_API_URL + `${projectId}/canvas`, { canvasData }, { headers: authHeader() });
+};
+
+const getCanvasData = (projectId) => {
+  return axios.get(PROJECT_API_URL + `${projectId}/canvas`, { headers: authHeader() });
+};
+
 const projectService = {
   getProjects,
   createProject,
   inviteUser,
+  saveCanvasData,
+  getCanvasData,
 };
 
 export default projectService; 

@@ -111,6 +111,12 @@ const DashboardPage = () => {
                                 />
                                 <button type="submit">Invite</button>
                             </form>
+                            <button
+                              style={{ marginTop: '1rem', padding: '0.5rem 1.2rem', borderRadius: 8, border: 'none', background: '#667eea', color: '#fff', fontWeight: 600, cursor: 'pointer' }}
+                              onClick={() => navigate(`/project/${project._id}/whiteboard`)}
+                            >
+                              Open Whiteboard
+                            </button>
                         </div>
                     ))}
                 </div>

@@ -23,4 +23,9 @@ router.get('/accept-invite', projectController.acceptInvite);
 // Reject invitation (no auth, by token)
 router.get('/reject-invite', projectController.rejectInvite);
 
+// Save canvas data for a project
+router.patch('/:id/canvas', auth, projectController.saveCanvasData);
+// Get canvas data for a project
+router.get('/:id/canvas', auth, projectController.getCanvasData);
+
 module.exports = router; 

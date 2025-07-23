@@ -165,4 +165,59 @@ exports.rejectInvite = async (req, res) => {
         console.error(err.message);
         res.status(500).send('Server Error');
     }
+};
+
+// Save canvas data for a project
+exports.saveCanvasData = async (req, res) => {
+    const { id } = req.params;
+    const { canvasData } = req.body;
+    try {
+        console.log(`[DEBUG] saveCanvasData called by user: ${req.user.id} for project: ${id}`);
+        const project = await Project.findById(id);
+        if (!project) {
+            console.log('[DEBUG] Project not found:', id);
+            return res.status(404).json({ msg: 'Project not found' });
+        }
+        // Only allow owner or collaborator
+        if (
+            project.owner.toString() !== req.user.id &&
+            !project.collaborators.map(String).includes(req.user.id)
+        ) {
+            console.log('[DEBUG] Not authorized:', req.user.id);
+            return res.status(401).json({ msg: 'Not authorized' });
+        }
+        console.log('[DEBUG] Saving canvasData to DB:', canvasData);
+        project.canvasData = canvasData;
+        await project.save();
+        res.json({ msg: 'Canvas data saved.', saved: project.canvasData });
+    } catch (err) {
+        console.error('[DEBUG] Error in saveCanvasData:', err.message);
+        res.status(500).send('Server Error');
+    }
+};
+
+// Get canvas data for a project
+exports.getCanvasData = async (req, res) => {
+    const { id } = req.params;
+    try {
+        console.log(`[DEBUG] getCanvasData called by user: ${req.user.id} for project: ${id}`);
+        const project = await Project.findById(id);
+        if (!project) {
+            console.log('[DEBUG] Project not found:', id);
+            return res.status(404).json({ msg: 'Project not found' });
+        }
+        // Only allow owner or collaborator
+        if (
+            project.owner.toString() !== req.user.id &&
+            !project.collaborators.map(String).includes(req.user.id)
+        ) {
+            console.log('[DEBUG] Not authorized:', req.user.id);
+            return res.status(401).json({ msg: 'Not authorized' });
+        }
+        console.log('[DEBUG] Returning canvasData from DB:', project.canvasData);
+        res.json({ canvasData: project.canvasData });
+    } catch (err) {
+        console.error('[DEBUG] Error in getCanvasData:', err.message);
+        res.status(500).send('Server Error');
+    }
 }; 
