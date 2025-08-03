@@ -90,6 +90,9 @@ const RegisterPage = () => {
       <p className="switch-auth-link">
         Already have an account? <Link to="/login">Login</Link>
       </p>
+      <p className="switch-auth-link">
+        <Link to="/whiteboard">Continue drawing without registration</Link>
+      </p>
     </div>
   );
 };

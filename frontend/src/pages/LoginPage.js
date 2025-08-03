@@ -74,6 +74,9 @@ const LoginPage = () => {
       <p className="switch-auth-link">
         Don't have an account? <Link to="/register">Register</Link>
       </p>
+      <p className="switch-auth-link">
+        <Link to="/whiteboard">Continue drawing without login</Link>
+      </p>
     </div>
   );
 };

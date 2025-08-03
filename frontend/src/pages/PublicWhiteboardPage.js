@@ -1,10 +1,9 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
 import { Stage, Layer, Line, Circle, Text } from 'react-konva';
 import { io } from 'socket.io-client';
-import projectService from '../services/project.service';
 import { API_URL } from '../services/api';
 import authService from '../services/auth.service';
+import { useNavigate } from 'react-router-dom';
 
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 600;
@@ -14,14 +13,15 @@ const TOOL_PEN = 'pen';
 const TOOL_ERASER = 'eraser';
 const TOOL_BRUSH = 'brush';
 
+const PUBLIC_ROOM_ID = 'public-canvas';
+
 function getInitials(email) {
   if (!email) return '';
   const [name] = email.split('@');
   return name.length > 2 ? name.slice(0, 2).toUpperCase() : name.toUpperCase();
 }
 
-const WhiteboardPage = () => {
-  const { id: projectId } = useParams();
+const PublicWhiteboardPage = () => {
   const [lines, setLines] = useState([]); // {points, color, width, tool, userEmail}
   const [isDrawing, setIsDrawing] = useState(false);
   const [penColor, setPenColor] = useState('#222222');
@@ -32,51 +32,20 @@ const WhiteboardPage = () => {
   const [undoStack, setUndoStack] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
   const [showLoginPrompt, setShowLoginPrompt] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState('');
   const stageRef = useRef(null);
   const socketRef = useRef(null);
   const clientId = useRef(Math.random().toString(36).substr(2, 9));
   const myCursorColor = useRef('#' + Math.floor(Math.random()*16777215).toString(16));
   const user = authService.getCurrentUser();
-  const userEmail = user?.email || 'anon';
+  const userEmail = user?.email || 'Anonymous';
   const navigate = useNavigate();
-
-  // Load lines from backend on mount
-  useEffect(() => {
-    projectService.getCanvasData(projectId)
-      .then(res => {
-        if (res.data && res.data.canvasData) {
-          try {
-            const json = typeof res.data.canvasData === 'string' ? JSON.parse(res.data.canvasData) : res.data.canvasData;
-            setLines(json.lines || []);
-          } catch (e) {
-            console.error('[DEBUG] Failed to parse canvasData as JSON:', e, res.data.canvasData);
-          }
-        }
-      })
-      .catch(err => {
-        console.log('[DEBUG] Error loading canvas data:', err?.response?.data?.msg || err.message);
-      });
-  }, [projectId]);
-
-  // Save lines to backend
-  const saveLines = (newLines) => {
-    const data = JSON.stringify({ lines: newLines });
-    projectService.saveCanvasData(projectId, data)
-      .then(res => {
-        //
-      })
-      .catch(err => {
-        console.error('[DEBUG] Error saving canvas data:', err);
-      });
-  };
 
   // Socket.io setup for real-time collaboration
   useEffect(() => {
     const socket = io(SOCKET_URL);
     socketRef.current = socket;
-    socket.emit('join-room', projectId);
-    socket.emit('user-join', { projectId, clientId: clientId.current, email: userEmail });
+    socket.emit('join-room', PUBLIC_ROOM_ID);
+    socket.emit('user-join', { projectId: PUBLIC_ROOM_ID, clientId: clientId.current, email: userEmail });
 
     // Receive remote drawing
     socket.on('drawing', (data) => {
@@ -102,78 +71,64 @@ const WhiteboardPage = () => {
     // Remove cursor on disconnect
     socket.on('user-disconnected', (sender) => {
       setRemoteCursors(prev => {
-        const copy = { ...prev };
-        delete copy[sender];
-        return copy;
+        const newCursors = { ...prev };
+        delete newCursors[sender];
+        return newCursors;
       });
-      setUserList(prev => prev.filter(u => u.clientId !== sender));
     });
 
-    // User list management
+    // Update user list
     socket.on('user-list', (users) => {
       setUserList(users);
     });
-    socket.on('user-join', (user) => {
-      setUserList(prev => {
-        if (prev.some(u => u.clientId === user.clientId)) return prev;
-        return [...prev, user];
-      });
-    });
-    socket.on('user-leave', (user) => {
-      setUserList(prev => prev.filter(u => u.clientId !== user.clientId));
-    });
-
-    // Announce myself
-    socket.emit('user-join', { projectId, clientId: clientId.current, email: userEmail });
 
     return () => {
       socket.disconnect();
     };
-  }, [projectId, userEmail]);
+  }, [userEmail]);
 
-  // Drawing handlers
+  // Save lines to localStorage for public canvas
+  const saveLines = (newLines) => {
+    try {
+      localStorage.setItem('public-canvas-data', JSON.stringify({ lines: newLines }));
+    } catch (e) {
+      console.error('Error saving to localStorage:', e);
+    }
+  };
+
+  // Load lines from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('public-canvas-data');
+      if (saved) {
+        const data = JSON.parse(saved);
+        setLines(data.lines || []);
+      }
+    } catch (e) {
+      console.error('Error loading from localStorage:', e);
+    }
+  }, []);
+
   const handleMouseDown = (e) => {
     setIsDrawing(true);
-    setUndoStack(prev => [...prev, lines]);
-    setRedoStack([]);
     const pos = e.target.getStage().getPointerPosition();
-    const newLine = {
-      points: [pos.x, pos.y],
-      color: tool === TOOL_ERASER ? '#fff' : (tool === TOOL_BRUSH ? penColor : penColor),
-      width: tool === TOOL_BRUSH ? brushSize * 2 : brushSize,
-      tool,
-      clientId: clientId.current,
-      email: userEmail
-    };
-    setLines([...lines, newLine]);
-    // Emit start of new line
-    if (socketRef.current) {
-      socketRef.current.emit('drawing', { projectId, data: { line: newLine } });
-    }
+    setLines([...lines, { points: [pos.x, pos.y], color: penColor, width: brushSize, tool, userEmail }]);
   };
 
   const handleMouseMove = (e) => {
     if (!isDrawing) return;
+
     const stage = e.target.getStage();
     const point = stage.getPointerPosition();
-    setLines(prevLines => {
-      const lastLine = prevLines[prevLines.length - 1];
-      if (!lastLine) return prevLines;
-      const updatedLine = {
-        ...lastLine,
-        points: lastLine.points.concat([point.x, point.y])
-      };
-      const newLines = prevLines.slice(0, -1).concat(updatedLine);
-      // Emit updated line
-      if (socketRef.current) {
-        socketRef.current.emit('drawing', { projectId, data: { line: updatedLine } });
-      }
-      return newLines;
-    });
-    // Emit cursor position
+    let lastLine = lines[lines.length - 1];
+    lastLine.points = lastLine.points.concat([point.x, point.y]);
+    lines.splice(lines.length - 1, 1, lastLine);
+    setLines([...lines]);
+
+    // Send cursor position
     if (socketRef.current) {
       socketRef.current.emit('cursor', {
-        projectId,
+        projectId: PUBLIC_ROOM_ID,
         cursor: { x: point.x, y: point.y, color: myCursorColor.current, email: userEmail }
       });
     }
@@ -181,32 +136,39 @@ const WhiteboardPage = () => {
 
   const handleMouseUp = () => {
     setIsDrawing(false);
+    setUndoStack([...undoStack, lines]);
+    setRedoStack([]);
     saveLines(lines);
+
+    // Broadcast drawing
+    if (socketRef.current) {
+      socketRef.current.emit('drawing', {
+        projectId: PUBLIC_ROOM_ID,
+        line: lines[lines.length - 1]
+      });
+    }
   };
 
   const handleClear = () => {
-    setUndoStack(prev => [...prev, lines]);
-    setRedoStack([]);
     setLines([]);
+    setUndoStack([]);
+    setRedoStack([]);
     saveLines([]);
+
     if (socketRef.current) {
-      socketRef.current.emit('clear', { projectId });
+      socketRef.current.emit('clear', { projectId: PUBLIC_ROOM_ID });
     }
   };
 
-  // Undo/Redo handlers
   const handleUndo = () => {
     if (undoStack.length === 0) return;
-    setRedoStack(prev => [lines, ...prev]);
-    const prevLines = undoStack[undoStack.length - 1];
+    setRedoStack([lines, ...redoStack]);
+    const previousLines = undoStack[undoStack.length - 1];
     setUndoStack(undoStack.slice(0, -1));
-    setLines(prevLines);
-    saveLines(prevLines);
-    if (socketRef.current) {
-      // Optionally broadcast undo
-      // socketRef.current.emit('undo', { projectId, lines: prevLines });
-    }
+    setLines(previousLines);
+    saveLines(previousLines);
   };
+
   const handleRedo = () => {
     if (redoStack.length === 0) return;
     setUndoStack(prev => [...prev, lines]);
@@ -214,10 +176,6 @@ const WhiteboardPage = () => {
     setRedoStack(redoStack.slice(1));
     setLines(nextLines);
     saveLines(nextLines);
-    if (socketRef.current) {
-      // Optionally broadcast redo
-      // socketRef.current.emit('redo', { projectId, lines: nextLines });
-    }
   };
 
   // Tool selector
@@ -225,14 +183,9 @@ const WhiteboardPage = () => {
     setTool(newTool);
   };
 
-  // Handle invite action - show login prompt for unauthenticated users
+  // Handle invite action - show login prompt
   const handleInvite = () => {
-    if (!user) {
-      setShowLoginPrompt(true);
-      return;
-    }
-    // If user is authenticated, show invite form or navigate to dashboard
-    navigate('/dashboard');
+    setShowLoginPrompt(true);
   };
 
   // Handle login navigation
@@ -372,8 +325,16 @@ const WhiteboardPage = () => {
           </Layer>
         </Stage>
       </div>
+
+      {/* User info */}
+      <div style={{ marginTop: '1rem', color: '#fff', textAlign: 'center' }}>
+        <p>Drawing as: {userEmail}</p>
+        {userList.length > 1 && (
+          <p>Active users: {userList.length}</p>
+        )}
+      </div>
     </div>
   );
 };
 
-export default WhiteboardPage; 
+export default PublicWhiteboardPage; 
